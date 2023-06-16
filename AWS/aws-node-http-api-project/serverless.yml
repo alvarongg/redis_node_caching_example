@@ -13,5 +13,106 @@ functions:
           path: /
           method: get
 
+resources:
+  Resources:
+    RedisCluster:
+      Type: AWS::ElastiCache::CacheCluster
+      Properties:
+        CacheNodeType: cache.t4g.micro
+        Engine: redis
+        NumCacheNodes: 1
+        VpcSecurityGroupIds:
+          - !Ref RedisSecurityGroup
+    RedisSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Redis security group
+        VpcId: !Ref VPC
+        SecurityGroupIngress:
+          - FromPort: 6379
+            ToPort: 6379
+            IpProtocol: tcp
+            CidrIp: 0.0.0.0/0
+    LambdaFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        FunctionName: MyLambdaFunction
+        Runtime: nodejs14.x
+        Handler: index.handler
+        Role: !GetAtt LambdaExecutionRole.Arn
+        Code:
+          ZipFile: |
+            const Redis = require('ioredis');
+            const redis = new Redis({
+              host: '<RedisEndpoint>',
+              port: 6379,
+              password: '<RedisPassword>',
+            });
 
-
+            exports.handler = async (event) => {
+              // Tu lógica de función Lambda aquí
+            }
+    LambdaExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: MyLambdaExecutionRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: LambdaPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: 'arn:aws:logs:*:*:*'
+    ApiGatewayRestApi:
+      Type: AWS::ApiGateway::RestApi
+      Properties:
+        Name: MyApiGateway
+    ApiGatewayResource:
+      Type: AWS::ApiGateway::Resource
+      Properties:
+        ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+        PathPart: myresource
+        RestApiId: !Ref ApiGatewayRestApi
+    ApiGatewayMethod:
+      Type: AWS::ApiGateway::Method
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ResourceId: !Ref ApiGatewayResource
+        HttpMethod: GET
+        AuthorizationType: NONE
+        Integration:
+          IntegrationHttpMethod: POST
+          Type: AWS_PROXY
+          Uri: !Sub
+            - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFunction.Arn}/invocations
+            - LambdaFunctionArn: !GetAtt LambdaFunction.Arn
+    ApiGatewayDeployment:
+      Type: AWS::ApiGateway::Deployment
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        StageName: Prod
+    ApiGatewayPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !GetAtt LambdaFunction.Arn
+        Action: lambda:InvokeFunction
+        Principal: apigateway.amazonaws.com
+        SourceArn: !Sub
+          - arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*
+          - ApiGatewayRestApi: !Ref ApiGatewayRestApi
+          
+Outputs:
+  ApiGatewayEndpoint:
+    Value: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod'
